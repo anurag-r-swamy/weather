@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hybrid Weather Station Hub</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen p-4 md:p-6 flex flex-col items-center">
+
+    <div class="max-w-5xl w-full bg-white p-6 rounded-2xl shadow-xl border border-slate-200">
+        <header class="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-slate-100 pb-4 gap-4">
+            <div>
+                <h1 class="text-2xl font-black text-slate-900 tracking-wide">METEOROLOGICAL STATION</h1>
+                <p id="debug-log" class="text-xs text-slate-500 font-mono mt-1">Status: Booting Hybrid Polling Modules...</p>
+            </div>
+            <div class="flex items-center gap-3">
+                <button onclick="clearStoredData()" class="px-3 py-1 text-xs font-bold bg-red-50 text-red-600 border border-red-200 rounded-lg hover:bg-red-100 transition-all cursor-pointer">
+                    Clear Saved History
+                </button>
+                <span id="status" class="px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-700 border border-amber-200 shadow-xs">
+                    Connecting...
+                </span>
+            </div>
+        </header>
+        
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200/70 shadow-xs">
+                <span class="text-xs text-slate-400 font-bold uppercase block mb-1">Temperature</span>
+                <div class="flex items-baseline"><span id="temperature" class="text-3xl font-black text-orange-600">--</span><span class="text-xs font-bold text-slate-400 ml-0.5">°C</span></div>
+            </div>
+            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200/70 shadow-xs">
+                <span class="text-xs text-slate-400 font-bold uppercase block mb-1">Humidity</span>
+                <div class="flex items-baseline"><span id="humidity" class="text-3xl font-black text-blue-600">--</span><span class="text-xs font-bold text-slate-400 ml-0.5">%</span></div>
+            </div>
+            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200/70 shadow-xs">
+                <span class="text-xs text-slate-400 font-bold uppercase block mb-1">Atm. Pressure</span>
+                <div class="flex items-baseline"><span id="pressure" class="text-2xl font-black text-emerald-600">--</span><span class="text-xs font-bold text-slate-400 ml-0.5">hPa</span></div>
+            </div>
+            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200/70 shadow-xs col-span-2">
+                <span class="text-xs text-slate-400 font-bold uppercase block mb-1">Current Wind Track</span>
+                <span id="direction" class="text-xl font-black text-indigo-600 truncate block">--</span>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200/70 flex flex-col h-[300px]">
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-xs text-slate-500 font-bold uppercase">Wind Velocity History</span>
+                    <span class="text-sm font-black text-purple-600"><span id="windSpeedLabel">0.0</span> m/s</span>
+                </div>
+                <div class="flex-1 min-h-0 w-full relative"><canvas id="windChart"></canvas></div>
+            </div>
+            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200/70 flex flex-col h-[300px]">
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-xs text-slate-500 font-bold uppercase">Precipitation Log (12-Hr Loop)</span>
+                    <span class="text-sm font-black text-teal-600"><span id="rainfallLabel">0.00</span> mm</span>
+                </div>
+                <div class="flex-1 min-h-0 w-full relative"><canvas id="rainChart"></canvas></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- CONFIGURATION MANAGEMENT ---
+        const ONLINE_CLOUD_URL = "https://your-project-name.vercel.app/api/telemetry"; 
+        const OFFLINE_LOCAL_URL = "http://192.168.1.50/api/live"; // Your ESP32 local IP address                   
+        const MAX_STORAGE_POINTS = 100; 
+
+        const statusBadge = document.getElementById('status');
+        const debugLog = document.getElementById('debug-log');
+
+        // --- CHART ENGINES GENERATION ---
+        const windChart = new Chart(document.getElementById('windChart').getContext('2d'), {
+            type: 'line',
+            data: { labels: [], datasets: [{ label: 'Wind Speed', data: [], borderColor: '#9333ea', backgroundColor: 'rgba(147, 51, 234, 0.05)', borderWidth: 2, pointRadius: 1, tension: 0.4, fill: true }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+        });
+
+        const rainChart = new Chart(document.getElementById('rainChart').getContext('2d'), {
+            type: 'bar',
+            data: { labels: [], datasets: [{ label: 'Rainfall', data: [], backgroundColor: '#0d9488', borderRadius: 4 }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+        });
+
+        // --- BROWSER LOCAL STORAGE PIPELINES ---
+        function loadSavedHistory() {
+            try {
+                const savedData = localStorage.getItem('weather_station_history');
+                if (savedData) {
+                    const history = JSON.parse(savedData);
+                    history.forEach(point => {
+                        windChart.data.labels.push(point.time);
+                        windChart.data.datasets[0].data.push(point.wind);
+                        rainChart.data.labels.push(point.time);
+                        rainChart.data.datasets[0].data.push(point.rain);
+                    });
+                    windChart.update(); rainChart.update(); 
+                    debugLog.textContent = `Restored ${history.length} data points from internal browser cache memory.`;
+                }
+            } catch (e) { debugLog.textContent = "Cache Read Failed."; }
+        }
+
+        function saveDataToBrowser(timeString, windValue, rainValue) {
+            let history = [];
+            const savedData = localStorage.getItem('weather_station_history');
+            if (savedData) { try { history = JSON.parse(savedData); } catch(e) {} }
+            history.push({ time: timeString, wind: windValue, rain: rainValue });
+            if (history.length > MAX_STORAGE_POINTS) history.shift();
+            localStorage.setItem('weather_station_history', JSON.stringify(history));
+        }
+
+        function clearStoredData() {
+            localStorage.removeItem('weather_station_history');
+            windChart.data.labels = []; windChart.data.datasets[0].data = [];
+            rainChart.data.labels = []; rainChart.data.datasets[0].data = [];
+            windChart.update(); rainChart.update();
+            debugLog.textContent = "Local history data array purged.";
+        }
+
+        // --- AUTOMATED FALLBACK ROUTING ENGINE ---
+        async function fetchSystemMetrics() {
+            let res;
+            let activeMode = "Online Cloud Mode";
+            let targetURL = ONLINE_CLOUD_URL;
+
+            try {
+                // Try reaching Vercel Cloud first
+                res = await fetch(targetURL, { signal: AbortSignal.timeout(800) });
+                if (!res.ok) throw new Error();
+            } catch (err) {
+                // FALLBACK: Switch immediately to Local network node on failure
+                activeMode = "Offline Local Backup Mode";
+                targetURL = OFFLINE_LOCAL_URL;
+                try {
+                    res = await fetch(targetURL, { signal: AbortSignal.timeout(800) });
+                    if (!res.ok) throw new Error();
+                } catch (localErr) {
+                    statusBadge.textContent = "All Stations Offline";
+                    statusBadge.className = "px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700 border border-red-200";
+                    debugLog.textContent = "Error: Local device and Cloud connection lost.";
+                    return;
+                }
+            }
+
+            // Parse metrics payload
+            try {
+                const data = await res.json();
+                const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+                statusBadge.textContent = activeMode;
+                statusBadge.className = activeMode === "Online Cloud Mode" 
+                    ? "px-3 py-1 rounded-full text-xs font-bold bg-green-100 text-green-700 border border-green-200"
+                    : "px-3 py-1 rounded-full text-xs font-bold bg-blue-100 text-blue-700 border border-blue-200";
+
+                ['temperature', 'humidity', 'pressure', 'direction'].forEach(key => {
+                    const el = document.getElementById(key);
+                    if(el && data[key] !== undefined) el.textContent = (typeof data[key] === 'number') ? data[key].toFixed(1) : data[key];
+                });
+
+                const currentWind = data.windSpeed !== undefined ? data.windSpeed : 0;
+                const currentRain = data.rainfall !== undefined ? data.rainfall : 0;
+
+                document.getElementById('windSpeedLabel').textContent = currentWind.toFixed(1);
+                document.getElementById('rainfallLabel').textContent = currentRain.toFixed(2);
+
+                if (data.history && data.history.length > 0 && activeMode === "Online Cloud Mode") {
+                    windChart.data.labels = data.history.map(h => h.time);
+                    windChart.data.datasets[0].data = data.history.map(h => h.wind);
+                    rainChart.data.labels = data.history.map(h => h.time);
+                    rainChart.data.datasets[0].data = data.history.map(h => h.rain);
+                } else {
+                    if (windChart.data.labels.length > MAX_STORAGE_POINTS) {
+                        windChart.data.labels.shift(); windChart.data.datasets[0].data.shift();
+                        rainChart.data.labels.shift(); rainChart.data.datasets[0].data.shift();
+                    }
+                    windChart.data.labels.push(now);
+                    windChart.data.datasets[0].data.push(currentWind);
+                    rainChart.data.labels.push(now);
+                    rainChart.data.datasets[0].data.push(currentRain);
+                }
+
+                windChart.update(); rainChart.update();
+                saveDataToBrowser(now, currentWind, currentRain);
+                debugLog.textContent = `Pipeline active: polling at 1Hz via [${activeMode}]`;
+
+            } catch (e) {}
+        }
+
+        // --- SYSTEM ENGINE INITIALIZATION ---
+        loadSavedHistory();
+        setInterval(fetchSystemMetrics, 1000); // --- TIMEOUT REGISTERED AT EXACTLY 1 SECOND ---
+        fetchSystemMetrics();
+    </script>
+</body>
+</html>
