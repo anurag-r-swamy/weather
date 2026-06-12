@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hybrid Weather Hub</title>
+    <title>Hybrid Weather Station Hub</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -12,12 +12,17 @@
     <div class="max-w-5xl w-full bg-white p-6 rounded-2xl shadow-xl border border-slate-200">
         <header class="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-slate-100 pb-4 gap-4">
             <div>
-                <h1 class="text-2xl font-black text-slate-900 tracking-wide">HYBRID METEOROLOGICAL STATION</h1>
-                <p id="debug-log" class="text-xs text-slate-500 font-mono mt-1">Status: Checking System Pipelines...</p>
+                <h1 class="text-2xl font-black text-slate-900 tracking-wide">HYBRID WEATHER STATION</h1>
+                <p id="debug-log" class="text-xs text-slate-500 font-mono mt-1">Status: Initializing parallel data feeds...</p>
             </div>
-            <span id="status" class="px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-700 border border-amber-200 shadow-xs">
-                Connecting...
-            </span>
+            <div class="flex items-center gap-3">
+                <button onclick="clearStoredData()" class="px-3 py-1 text-xs font-bold bg-red-50 text-red-600 border border-red-200 rounded-lg hover:bg-red-100 transition-all cursor-pointer">
+                    Clear Saved History
+                </button>
+                <span id="status" class="px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-700 border border-amber-200 shadow-xs">
+                    Connecting...
+                </span>
+            </div>
         </header>
         
         <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
@@ -42,14 +47,14 @@
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div class="bg-slate-50 p-4 rounded-xl border border-slate-200/70 flex flex-col h-[300px]">
                 <div class="flex justify-between items-center mb-2">
-                    <span class="text-xs text-slate-500 font-bold uppercase">Wind Velocity Profile</span>
+                    <span class="text-xs text-slate-500 font-bold uppercase">Wind Velocity History</span>
                     <span class="text-sm font-black text-purple-600"><span id="windSpeedLabel">0.0</span> m/s</span>
                 </div>
                 <div class="flex-1 min-h-0 w-full relative"><canvas id="windChart"></canvas></div>
             </div>
             <div class="bg-slate-50 p-4 rounded-xl border border-slate-200/70 flex flex-col h-[300px]">
                 <div class="flex justify-between items-center mb-2">
-                    <span class="text-xs text-slate-500 font-bold uppercase">Precipitation Log (12-Hr Loop)</span>
+                    <span class="text-xs text-slate-500 font-bold uppercase">Precipitation Log</span>
                     <span class="text-sm font-black text-teal-600"><span id="rainfallLabel">0.00</span> mm</span>
                 </div>
                 <div class="flex-1 min-h-0 w-full relative"><canvas id="rainChart"></canvas></div>
@@ -58,104 +63,142 @@
     </div>
 
     <script>
-        // --- REFRESH NETWORK INFRASTRUCTURE CONFIGURATION ---
-        const LOCAL_ESP32_IP = "192.168.1.50"; // Adjust to your exact local board IP address
-        const MAX_STORAGE_POINTS = 60;          // Limits rendering scope viewport size
+        // --- 1. SET HARDWARE ROUTING PARAMETERS ---
+        const LOCAL_ESP32_IP = "192.168.1.50"; 
+        const MAX_STORAGE_POINTS = 60; 
 
         const statusBadge = document.getElementById('status');
         const debugLog = document.getElementById('debug-log');
 
-        // Determine working mode environment context
-        // If loaded from "localhost" or Vercel, run cloud tracking mode. If opened as a local file, switch to direct hardware fallback mode.
-        const isLocalFileMode = window.location.protocol === 'file:';
-
-        // --- CHART OBJECT BUILD DECLARATIONS ---
+        // --- 2. CONFIGURING CHART OBJECT VALUES ---
         const windChart = new Chart(document.getElementById('windChart').getContext('2d'), {
             type: 'line',
-            data: { labels: [], datasets: [{ label: 'Wind Speed', data: [], borderColor: '#9333ea', backgroundColor: 'rgba(147, 51, 234, 0.05)', borderWidth: 2, pointRadius: 1, tension: 0.3, fill: true }] },
+            data: { labels: [], datasets: [{ data: [], borderColor: '#9333ea', backgroundColor: 'rgba(147, 51, 234, 0.05)', borderWidth: 2, pointRadius: 1, tension: 0.3, fill: true }] },
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
         });
 
         const rainChart = new Chart(document.getElementById('rainChart').getContext('2d'), {
             type: 'bar',
-            data: { labels: [], datasets: [{ label: 'Rainfall', data: [], backgroundColor: '#0d9488', borderRadius: 4 }] },
+            data: { labels: [], datasets: [{ data: [], backgroundColor: '#0d9488', borderRadius: 4 }] },
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
         });
 
-        // --- REPEATING POLLING REFRESH LOOP ENGINE (1Hz Frequency) ---
-        async function runDataSynchronizationPipeline() {
-            let fetchTargetURL = "";
-            let communicationModeText = "";
+        // --- 3. BROWSER DATA STORAGE PERSISTENCE ---
+        function loadSavedHistory() {
+            try {
+                const savedData = localStorage.getItem('weather_station_history');
+                if (savedData) {
+                    const history = JSON.parse(savedData);
+                    history.forEach(point => {
+                        windChart.data.labels.push(point.time); windChart.data.datasets[0].data.push(point.wind);
+                        rainChart.data.labels.push(point.time); rainChart.data.datasets[0].data.push(point.rain);
+                    });
+                    windChart.update(); rainChart.update();
+                    debugLog.textContent = `Restored ${history.length} historical updates from local cache memory.`;
+                }
+            } catch (e) {}
+        }
 
-            if (isLocalFileMode) {
-                fetchTargetURL = `http://${LOCAL_ESP32_IP}/api/live`;
-                communicationModeText = "Offline Fallback Mode";
-            } else {
-                fetchTargetURL = `${window.location.origin}/api/telemetry`;
-                communicationModeText = "Vercel Secure Cloud Mode";
+        function saveDataToBrowser(timeString, windValue, rainValue) {
+            let history = [];
+            const savedData = localStorage.getItem('weather_station_history');
+            if (savedData) { try { history = JSON.parse(savedData); } catch(e) {} }
+            history.push({ time: timeString, wind: windValue, rain: rainValue });
+            if (history.length > MAX_STORAGE_POINTS) history.shift();
+            localStorage.setItem('weather_station_history', JSON.stringify(history));
+        }
+
+        function clearStoredData() {
+            localStorage.removeItem('weather_station_history');
+            windChart.data.labels = []; windChart.data.datasets[0].data = [];
+            rainChart.data.labels = []; rainChart.data.datasets[0].data = [];
+            windChart.update(); rainChart.update();
+            debugLog.textContent = "Data log arrays cleared.";
+        }
+
+        // --- 4. INDEPENDENT PARALLEL PIPELINE ENGINE ---
+        async function fetchSystemMetrics() {
+            const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            let freshData = null;
+            let originSource = "";
+
+            // Strategy A: Try parsing from Local Network ESP32 Endpoint directly
+            try {
+                const localRes = await fetch(`http://${LOCAL_ESP32_IP}/api/live`, { signal: AbortSignal.timeout(600) });
+                if (localRes.ok) {
+                    freshData = await localRes.json();
+                    originSource = "Offline Local Link (Direct)";
+                }
+            } catch (localErr) {
+                // Local check failed or timed out, move to Strategy B seamlessly
             }
 
-            try {
-                const res = await fetch(fetchTargetURL, { signal: AbortSignal.timeout(900) });
-                if (!res.ok) throw new Error(`HTTP System Fault Status: ${res.status}`);
-                
-                const data = await res.json();
-                const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            // Strategy B: If Local direct fetch failed, try the Cloud channel instead
+            if (!freshData && window.location.protocol !== 'file:') {
+                try {
+                    const cloudRes = await fetch(`${window.location.origin}/api/telemetry`, { signal: AbortSignal.timeout(600) });
+                    if (cloudRes.ok) {
+                        const cloudData = await cloudRes.json();
+                        // Verify cloud storage object holds telemetry parameters
+                        if (cloudData && cloudData.temperature) {
+                            freshData = cloudData;
+                            originSource = "Vercel Secure Cloud";
+                        }
+                    }
+                } catch (cloudErr) {}
+            }
 
-                // Update visual tracking layout components
-                statusBadge.textContent = communicationModeText;
-                statusBadge.className = isLocalFileMode 
+            // --- 5. RENDER SECTION ON SENSOR CAPTURES ---
+            if (freshData) {
+                statusBadge.textContent = originSource;
+                statusBadge.className = originSource.includes("Local")
                     ? "px-3 py-1 rounded-full text-xs font-bold bg-blue-100 text-blue-700 border border-blue-200"
                     : "px-3 py-1 rounded-full text-xs font-bold bg-green-100 text-green-700 border border-green-200";
 
                 ['temperature', 'humidity', 'pressure', 'direction'].forEach(key => {
                     const el = document.getElementById(key);
-                    if (el && data[key] !== undefined) {
-                        el.textContent = (typeof data[key] === 'number') ? data[key].toFixed(1) : data[key];
+                    if (el && freshData[key] !== undefined) {
+                        el.textContent = (typeof freshData[key] === 'number') ? freshData[key].toFixed(1) : freshData[key];
                     }
                 });
 
-                const wSpeed = data.windSpeed !== undefined ? data.windSpeed : 0;
-                const rVolume = data.rainfall !== undefined ? data.rainfall : 0;
+                const currentWind = freshData.windSpeed || 0;
+                const currentRain = freshData.rainfall || 0;
 
-                document.getElementById('windSpeedLabel').textContent = wSpeed.toFixed(1);
-                document.getElementById('rainfallLabel').textContent = rVolume.toFixed(2);
+                document.getElementById('windSpeedLabel').textContent = currentWind.toFixed(1);
+                document.getElementById('rainfallLabel').textContent = currentRain.toFixed(2);
 
-                // Chart Array Mapping Engine Transformations
-                if (!isLocalFileMode && data.history && data.history.length > 0) {
-                    // Sync up with history arrays from the cloud
-                    windChart.data.labels = data.history.map(h => h.time);
-                    windChart.data.datasets[0].data = data.history.map(h => h.wind);
-                    
-                    rainChart.data.labels = data.history.map(h => h.time);
-                    rainChart.data.datasets[0].data = data.history.map(h => h.rain);
+                // Handle chart histories
+                if (originSource === "Vercel Secure Cloud" && freshData.history && freshData.history.length > 0) {
+                    windChart.data.labels = freshData.history.map(h => h.time);
+                    windChart.data.datasets[0].data = freshData.history.map(h => h.wind);
+                    rainChart.data.labels = freshData.history.map(h => h.time);
+                    rainChart.data.datasets[0].data = freshData.history.map(h => h.rain);
                 } else {
-                    // Direct rolling fallback tracking strategy
                     if (windChart.data.labels.length > MAX_STORAGE_POINTS) {
                         windChart.data.labels.shift(); windChart.data.datasets[0].data.shift();
                         rainChart.data.labels.shift(); rainChart.data.datasets[0].data.shift();
                     }
-                    windChart.data.labels.push(now);
-                    windChart.data.datasets[0].data.push(wSpeed);
-                    
-                    rainChart.data.labels.push(now);
-                    rainChart.data.datasets[0].data.push(rVolume);
+                    windChart.data.labels.push(now); windChart.data.datasets[0].data.push(currentWind);
+                    rainChart.data.labels.push(now); rainChart.data.datasets[0].data.push(currentRain);
                 }
 
-                windChart.update();
-                rainChart.update();
-                debugLog.textContent = `Sync sequence complete at 1Hz frequency marker: ${now}`;
+                windChart.update(); rainChart.update();
+                saveDataToBrowser(now, currentWind, currentRain);
+                debugLog.textContent = `1Hz Feed Sync Active via [${originSource}]`;
 
-            } catch (err) {
-                statusBadge.textContent = "Data Link Fault";
+            } else {
+                // Fault State handler configuration if everything is completely disconnected
+                statusBadge.textContent = "Offline (No Link)";
                 statusBadge.className = "px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700 border border-red-200";
-                debugLog.textContent = `Error details: ${err.message}. Ensure device parameters are mapped correctly.`;
+                debugLog.textContent = "Data link error: Vercel Cloud 404 / ESP32 unreachable. Showing cached memory.";
             }
         }
 
-        // Run interval processes at exactly 1000 milliseconds (1 Second)
-        setInterval(runDataSynchronizationPipeline, 1000);
-        runDataSynchronizationPipeline();
+        // --- 6. CORE INITIALIZATION LOOP ---
+        loadSavedHistory();
+        setInterval(fetchSystemMetrics, 1000); // 1-Second Cycle Interval
+        fetchSystemMetrics();
     </script>
 </body>
 </html>
